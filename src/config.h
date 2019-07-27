@@ -35,7 +35,7 @@ static int bellvolume = 100;
  * spaces per tab
  *
  * When you are changing this value, don't forget to adapt the »it« value in
- * the st.info and appropriately install the st.info in the environment where
+ * the xst.info and appropriately install the xst.info in the environment where
  * you use this st version.
  *
  *	it#$tabspaces,
@@ -55,12 +55,15 @@ static int alpha = 0xff;
 static unsigned int doubleclicktimeout = 300;
 static unsigned int tripleclicktimeout = 600;
 static char *utmp = NULL;
-static int borderpx = 10;
-static int bold_font = 0;
+static unsigned int borderpx = 10;
+static unsigned int bold_font = 0;
+// If available font weight is different from fontconfig's FC_WEIGHT (200),
+// allow infelicity between the weights:
+static unsigned int max_bold_weight_infelicity = 20;
 static char stty_args[] = "stty raw pass8 nl -echo -iexten -cstopb 38400";
 static unsigned int xfps = 120;
 static unsigned int actionfps = 30;
-static char *termname = "st-256color";
+static char *termname = "xst-256color";
 static char *colorname[] = {
 	"#1e1e1e",
 	"#cf6a4c",
@@ -121,6 +124,8 @@ static unsigned int mousebg = 0;
  */
 static unsigned int defaultattr = 11;
 
+/* Amout of lines scrolled with mouse */
+static int mousescrolllines = 1;
 
 /* Internal mouse shortcuts. */
 /* Beware that overloading Button1 will disable the selection. */
@@ -132,8 +137,8 @@ static MouseShortcut mshortcuts[] = {
 
 static MouseKey mkeys[] = {
 	/* button               mask            function        argument */
-	{ Button4,              XK_NO_MOD,      kscrollup,      {.i =  1} },
-	{ Button5,              XK_NO_MOD,      kscrolldown,    {.i =  1} },
+	{ Button4,              XK_NO_MOD,      kscrollup,      {.i =  0} },
+	{ Button5,              XK_NO_MOD,      kscrolldown,    {.i =  0} },
 };
 
 /* Internal keyboard shortcuts. */
@@ -153,7 +158,7 @@ static Shortcut shortcuts[] = {
 	{ MODKEY|ShiftMask,     XK_C,           clipcopy,       {.i =  0} },
 	{ MODKEY|ShiftMask,     XK_V,           clippaste,      {.i =  0} },
 	{ MODKEY,               XK_Num_Lock,    numlock,        {.i =  0} },
-  { MODKEY,               XK_Control_L,   iso14755,       {.i =  0} },
+	{ MODKEY,               XK_Control_L,   iso14755,       {.i =  0} },
 	{ MODKEY,               'u',            externalpipe,   {.v = "xurls | eval dmenu $(dmenu_options) | xargs -r $BROWSER" } },
 	{ ShiftMask,            XK_Page_Up,     kscrollup,      {.i = -1} },
 	{ ShiftMask,            XK_Page_Down,   kscrolldown,    {.i = -1} },
@@ -161,7 +166,7 @@ static Shortcut shortcuts[] = {
 
 
 /*
- * Special keys (change & recompile st.info accordingly)
+ * Special keys (change & recompile xst.info accordingly)
  *
  * Mask value:
  * * Use XK_ANY_MOD to match the key no matter modifiers state
@@ -417,6 +422,8 @@ static Key key[] = {
 	{ XK_F34,           XK_NO_MOD,      "\033[21;5~",    0,    0,    0},
 	{ XK_F35,           XK_NO_MOD,      "\033[23;5~",    0,    0,    0},
 };
+
+static char *imstyle = "root";
 
 static uint selmasks[] = {
 	[SEL_RECTANGULAR] = Mod1Mask,

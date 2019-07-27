@@ -120,6 +120,9 @@ char *argv0;
 
 #define ISO14755CMD		"dmenu -w %lu -p codepoint: </dev/null"
 
+#define IMSTYLE_ROOT "root"
+#define IMSTYLE_OVERTHESPOT "overthespot"
+
 enum glyph_attribute {
 	ATTR_NULL       = 0,
 	ATTR_BOLD       = 1 << 0,
@@ -542,6 +545,11 @@ static void *xmalloc(size_t);
 static void *xrealloc(void *, size_t);
 static char *xstrdup(char *);
 
+static char *strtolower(char *);
+
+static int isavailableimstyle(XIMStyle);
+static void setpreeditposition();
+
 static void usage(void);
 
 static void (*handler[LASTEvent])(XEvent *) = {
@@ -666,6 +674,17 @@ xstrdup(char *s)
 		die("Out of memory\n");
 
 	return s;
+}
+
+char *
+strtolower(char *orig)
+{
+	char lower[strlen(orig)];
+
+	for(int i = 0; orig[i]; i++){
+	  lower[i] = (char)tolower(orig[i]);
+	}
+	return xstrdup(lower);
 }
 
 size_t
@@ -1803,6 +1822,9 @@ kscrolldown(const Arg* a)
 	if (n < 0)
 		n = term.row + n;
 
+	if (n == 0)
+		n = mousescrolllines;
+
 	if (n > term.scr)
 		n = term.scr;
 
@@ -1820,6 +1842,9 @@ kscrollup(const Arg* a)
 
 	if (n < 0)
 		n = term.row + n;
+
+	if (n == 0)
+		n = mousescrolllines;
 
 	if (term.scr <= histsize - n) {
 		term.scr += n;
@@ -3485,9 +3510,17 @@ xloadcols(void)
 
 	/* set alpha value of bg color */
 	if (USE_ARGB) {
+		// X11 uses premultiplied alpha values (i.e. 50% opacity white is
+		// 0x7f7f7f7f, not 0x7fffffff), so multiply color by alpha
 		dc.col[defaultbg].color.alpha = (0xffff * alpha) / OPAQUE; //0xcccc;
-		dc.col[defaultbg].pixel &= 0x00111111;
-		dc.col[defaultbg].pixel |= alpha << 24; // 0xcc000000;
+		dc.col[defaultbg].color.red   = (dc.col[defaultbg].color.red   * alpha) / OPAQUE;
+		dc.col[defaultbg].color.green = (dc.col[defaultbg].color.green * alpha) / OPAQUE;
+		dc.col[defaultbg].color.blue  = (dc.col[defaultbg].color.blue  * alpha) / OPAQUE;
+
+		dc.col[defaultbg].pixel =
+			((((dc.col[defaultbg].pixel & 0x00ff00ff) * alpha) / OPAQUE) & 0x00ff00ff) |
+			((((dc.col[defaultbg].pixel & 0x0000ff00) * alpha) / OPAQUE) & 0x0000ff00) |
+			alpha << 24;
 	}
 
 	loaded = 1;
@@ -3631,8 +3664,11 @@ xloadfont(Font *f, FcPattern *pattern)
 	    XftResultMatch)) {
 		if ((XftPatternGetInteger(f->match->pattern, "weight", 0,
 		    &haveattr) != XftResultMatch) || haveattr != wantattr) {
-			f->badweight = 1;
-			fputs("st: font weight does not match\n", stderr);
+			if (abs(haveattr - wantattr) > max_bold_weight_infelicity) {
+				f->badweight = 1;
+			}
+			fprintf(stderr, "st: font weight does not match (%i != %i)\n",
+					haveattr, wantattr);
 		}
 	}
 
@@ -3790,6 +3826,14 @@ xinit(void)
 	Window parent;
 	pid_t thispid = getpid();
 	XColor xmousefg, xmousebg;
+	XFontSet fontset;
+	XIMStyle ximstyle;
+	XPoint spot;
+	XVaNestedList *pnlist;
+	char **missingcharlist;
+	int nummissingcharlist;
+	char *defstring;
+	char pat[32];
 
 	if (!(xw.dpy = XOpenDisplay(NULL)))
 		die("Can't open display\n");
@@ -3890,9 +3934,30 @@ xinit(void)
 			}
 		}
 	}
-	xw.xic = XCreateIC(xw.xim, XNInputStyle, XIMPreeditNothing
-					   | XIMStatusNothing, XNClientWindow, xw.win,
-					   XNFocusWindow, xw.win, NULL);
+	/* default ximstyle (root) */
+	ximstyle = (XIMPreeditNothing | XIMStatusNothing);
+	pnlist = NULL;
+	if (!strncmp(imstyle, IMSTYLE_OVERTHESPOT, 11)) {
+		ximstyle = (XIMPreeditPosition | XIMStatusNothing);
+		if (isavailableimstyle(ximstyle)) {
+			sprintf(pat, "-*-*-*-R-*-*-%d-*-*-*-*-*-*,*", dc.font.height);
+			fontset = XCreateFontSet(xw.dpy, pat, &missingcharlist,
+									 &nummissingcharlist, &defstring);
+			if (missingcharlist)
+				XFreeStringList(missingcharlist);
+			if (!fontset)
+				die("XCreateFontset failed.");
+			spot.x = 0; spot.y = 0;
+			pnlist = XVaCreateNestedList(0, XNFontSet, fontset, XNSpotLocation,
+										  &spot, NULL);
+		}
+	}
+	xw.xic = XCreateIC(xw.xim, XNInputStyle, ximstyle, XNClientWindow,
+					   xw.win, XNFocusWindow, xw.win,
+					   pnlist ? XNPreeditAttributes : NULL,
+					   pnlist, NULL);
+	if (pnlist)
+		XFree(pnlist);
 	if (xw.xic == NULL)
 		die("XCreateIC failed. Could not obtain input method.\n");
 
@@ -4322,6 +4387,9 @@ xdrawcursor(void)
 				borderpx + (term.c.y + 1) * xw.ch - 1,
 				xw.cw, 1);
 	}
+	if ((!strncmp(imstyle, IMSTYLE_OVERTHESPOT, 11)) &&
+		(oldx != term.c.x || oldy != term.c.y))
+		setpreeditposition();
 	oldx = curx, oldy = term.c.y;
 }
 
@@ -4341,7 +4409,7 @@ xsettitle(char *p)
 void
 xresettitle(void)
 {
-	xsettitle(opt_title ? opt_title : "st");
+	xsettitle(opt_title ? opt_title : "xst");
 }
 
 void
@@ -4524,7 +4592,7 @@ kpress(XEvent *ev)
 {
 	XKeyEvent *e = &ev->xkey;
 	KeySym ksym;
-	char buf[32], *customkey;
+	char buf[128], *customkey;
 	int len;
 	Rune c;
 	Status status;
@@ -4814,13 +4882,19 @@ xrdb_load(void)
 		XRESOURCE_LOAD_INTEGER("cursorblinkstyle", cursorblinkstyle);
 		XRESOURCE_LOAD_INTEGER("cursorblinkontype", cursorblinkontype);
 
+		XRESOURCE_LOAD_INTEGER("mouseScrollLines", mousescrolllines);
+
 		XRESOURCE_LOAD_FLOAT("cwscale", cwscale);
 		XRESOURCE_LOAD_FLOAT("chscale", chscale);
 
 		XRESOURCE_LOAD_CHAR("prompt_char", prompt_char);
 
-		if (!xrdb_overrides_alpha)
+		if (!xrdb_overrides_alpha) {
 			XRESOURCE_LOAD_INTEGER("opacity", alpha);
+		}
+
+		XRESOURCE_LOAD_STRING("imstyle", imstyle);
+		imstyle = strtolower(imstyle);
 	}
 	XFlush(dpy);
 }
@@ -4845,6 +4919,34 @@ reload(int sig)
 	ttywrite("\033[O", 3);
 
 	signal(SIGUSR1, reload);
+}
+
+int
+isavailableimstyle(XIMStyle ximstyle)
+{
+	XIMStyles *ximstyles;
+	int i;
+	/* Get available input styles */
+	XGetIMValues(xw.xim, XNQueryInputStyle, &ximstyles, NULL);
+	for (i = 0; i < ximstyles->count_styles; i++)
+		if (ximstyle == ximstyles->supported_styles[i])
+			return TRUE;
+	return FALSE;
+}
+
+void
+setpreeditposition()
+{
+	XVaNestedList   xva_nlist;
+	XPoint          xpoint;
+
+	xpoint.x = borderpx + term.c.x * dc.font.width;
+	xpoint.y = (term.c.y + 1) * dc.font.height;
+
+	xva_nlist = XVaCreateNestedList(0, XNSpotLocation, &xpoint, NULL);
+	XSetICValues(xw.xic, XNPreeditAttributes, xva_nlist, NULL);
+
+	XFree(xva_nlist);
 }
 
 int
